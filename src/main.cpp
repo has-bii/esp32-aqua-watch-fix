@@ -12,121 +12,71 @@
 #include <NTPClient.h>
 #include <WiFiUdp.h>
 
-#define ESPADC 4095.0  // the esp Analog Digital Convertion value
-#define ESPVOLTAGE 3.3 // the esp voltage supply value
-
+// Constants
+#define ESPADC 4095.0
+#define ESPVOLTAGE 3.3
 #define BOOT_BUTTON 0
+#define TEMPERATURE_PIN 4
+#define PH_PIN 35
+#define TURBIDITY_PIN 34
+#define AP_SSID "Aqua Watch"
+#define AP_PASSWORD "aquawatch"
 
-// JSON global
-JsonDocument wifiJson;
-String wifiConf;
-JsonDocument userJson;
-String userConf;
-JsonDocument envJson;
-String envConf;
-
-// Define NTP Client to get time
+// Global Variables
+JsonDocument wifiJson, userJson, envJson;
+String wifiConf, userConf, envConf;
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP);
-
-// Webserver
 AsyncWebServer server(80);
-
-// LCD Setup
 LiquidCrystal_I2C lcd(0x27, 16, 2);
-int Menu = 1;
-
-// Temperature setup
-#define TEMPERATURE_PIN 4
 OneWire oneWire(TEMPERATURE_PIN);
 DallasTemperature sensors(&oneWire);
-
-// PH setup
-#define PH_PIN 35
 DFRobot_PH ph;
+float phValue, temperature, turbidity;
+int Menu = 1;
 
-// Turbidity setup
-#define TURBIDITY_PIN 34
-
-// Access Point
-const String ssidAP = "Aqua Watch";
-const String passwordAP = "aquawatch";
-
-// global variables
-float phValue, phVoltage, temperature, turbidity;
-
-// put function declarations here:
-void setupLCD();
+// Function Declarations
+void setupWebserver();
 float getTemperature();
 float getVoltage(uint8_t);
 float getPh();
 float getTurbidity();
-void printDigits(int);
-void LCDPrint(const String &text, const int duration);
+void handleButtonPress();
 void printMenu();
-void setupWebserver();
+void LCDPrint(const String &, int);
 void connectWifi();
 
-// Setup Function
 void setup()
 {
   Serial.begin(115200);
   EEPROM.begin(32);
   readFileInit();
-  setupLCD();
+  lcd.init();
+  lcd.backlight();
   sensors.begin();
   ph.begin();
-
   pinMode(BOOT_BUTTON, INPUT_PULLUP);
 
   LCDPrint("Setting AP...", 2);
   WiFi.mode(WIFI_AP_STA);
-  WiFi.disconnect();
-  WiFi.softAP(ssidAP, passwordAP);
-
-  LCDPrint("Scanning networks...", 2);
+  WiFi.softAP(AP_SSID, AP_PASSWORD);
   WiFi.scanNetworks(true);
-
   setupWebserver();
 }
 
-// Loop function
 void loop()
 {
   static unsigned long timepoint = millis();
-  static unsigned long pressStartTime = 0;
-  static bool actionTriggered = false;
-
-  if (digitalRead(BOOT_BUTTON) == LOW)
-  { // Button is pressed
-    if (pressStartTime == 0)
-    {
-      pressStartTime = millis(); // Start timing
-    }
-
-    if (!actionTriggered && (millis() - pressStartTime >= 1000U))
-    {
-      Menu++;
-      if (Menu > 4)
-        Menu = 1;
-      actionTriggered = true; // Ensure action triggers only once
-    }
-  }
-  else
-  {
-    // Button released → Reset tracking variables
-    pressStartTime = 0;
-    actionTriggered = false;
-  }
+  static bool isSent = false;
+  static int sentCount;
+  handleButtonPress();
 
   if (millis() - timepoint > 1000U)
   {
     timepoint = millis();
-
     temperature = getTemperature();
     phValue = getPh();
     turbidity = getTurbidity();
-
     printMenu();
 
     if (WiFi.status() == WL_CONNECTED)
@@ -135,19 +85,53 @@ void loop()
       {
         timeClient.begin();
         timeClient.setTimeOffset(3600 * 3);
+        Serial.println("getting time");
         timeClient.update();
       }
     }
     else
+    {
       connectWifi();
+    }
+
+    if (timeClient.getMinutes() % 3 == 0)
+    {
+      if (!isSent)
+      {
+        sentCount++;
+        Serial.print("Sending data: ");
+        Serial.println(sentCount);
+        isSent = true;
+      }
+    }
+    else
+      isSent = false;
   }
-  ph.calibration(phVoltage, temperature);
+
+  ph.calibration(getVoltage(PH_PIN), temperature);
 }
 
-void setupLCD()
+void handleButtonPress()
 {
-  lcd.init();
-  lcd.backlight();
+  static unsigned long pressStartTime = 0;
+  static bool actionTriggered = false;
+
+  if (digitalRead(BOOT_BUTTON) == LOW)
+  {
+    if (pressStartTime == 0)
+      pressStartTime = millis();
+
+    if (!actionTriggered && (millis() - pressStartTime >= 1000U))
+    {
+      Menu = (Menu % 4) + 1;
+      actionTriggered = true;
+    }
+  }
+  else
+  {
+    pressStartTime = 0;
+    actionTriggered = false;
+  }
 }
 
 float getVoltage(uint8_t pin)
@@ -163,36 +147,21 @@ float getTemperature()
 
 float getPh()
 {
-  int val = getVoltage(PH_PIN);
-  return ph.readPH(val, temperature);
+  return ph.readPH(getVoltage(PH_PIN), temperature);
 }
 
 float getTurbidity()
 {
-  int val = analogRead(TURBIDITY_PIN);
-  return map(val, 0, 2450, 0, 100);
+  return map(analogRead(TURBIDITY_PIN), 0, 2450, 0, 100);
 }
 
-void printDigits(int digits)
-{
-  Serial.print(":");
-  if (digits < 10)
-    Serial.print('0');
-  Serial.print(digits);
-}
-
-void LCDPrint(const String &text, const int duration)
+void LCDPrint(const String &text, int duration)
 {
   lcd.clear();
-
   lcd.setCursor(0, 0);
-  if (text.length() <= 16)
+  lcd.print(text.length() <= 16 ? text : text.substring(0, 16));
+  if (text.length() > 16)
   {
-    lcd.print(text);
-  }
-  else
-  {
-    lcd.print(text.substring(0, 16));
     lcd.setCursor(0, 1);
     lcd.print(text.substring(16));
   }
@@ -218,29 +187,20 @@ void printMenu()
       lcd.setCursor(8, 1);
       lcd.print(timeClient.getFormattedTime());
     }
-
     break;
-
   case 2:
   {
-    unsigned long milliseconds = millis();
-    unsigned long seconds = milliseconds / 1000;
-    unsigned long minutes = seconds / 60;
-    unsigned long hours = minutes / 60;
-    unsigned long days = hours / 24;
-
+    unsigned long sec = millis() / 1000;
     lcd.print("Uptime:");
     lcd.setCursor(0, 1);
-    lcd.printf("%lu:%lu:%lu:%lu", days, hours % 24, minutes % 60, seconds % 60);
-    break;
+    lcd.printf("%lu:%lu:%lu:%lu", sec / 86400, (sec / 3600) % 24, (sec / 60) % 60, sec % 60);
   }
-
+  break;
   case 3:
     lcd.print("Access Point:");
     lcd.setCursor(0, 1);
     lcd.print(WiFi.softAPIP());
     break;
-
   case 4:
     if (WiFi.status() == WL_CONNECTED)
     {
@@ -249,11 +209,10 @@ void printMenu()
         wifiConf = readFileToString("/wifi.json");
         deserializeJson(wifiJson, wifiConf);
       }
-
       if (wifiJson["ssid"].is<String>())
       {
         lcd.setCursor(0, 0);
-        lcd.print(String(wifiJson["ssid"].as<String>()));
+        lcd.print(wifiJson["ssid"].as<String>());
         lcd.setCursor(0, 1);
         lcd.print(WiFi.localIP().toString());
       }
@@ -268,27 +227,27 @@ void printMenu()
 
 void connectWifi()
 {
+  static int trying = 0;
   wifiConf = readFileToString("/wifi.json");
+
+  if (trying > 10)
+  {
+    SPIFFS.remove("/wifi.json");
+  }
+
   if (!wifiConf.isEmpty())
   {
     deserializeJson(wifiJson, wifiConf);
-
     if (wifiJson["ssid"].is<String>() && wifiJson["password"].is<String>())
     {
       WiFi.begin(wifiJson["ssid"].as<String>(), wifiJson["password"].as<String>());
-
-      int retryCount = 0;
-      while (WiFi.status() != WL_CONNECTED && retryCount < 10)
+      for (int i = 0; i < 10 && WiFi.status() != WL_CONNECTED; i++)
       {
-        retryCount++;
-        LCDPrint("Connecting... " + String(retryCount), 1);
+        LCDPrint("Connecting... " + String(i + 1), 1);
       }
-
-      if (WiFi.status() == WL_CONNECTED)
-        LCDPrint("Connected!", 2);
-      else
-        LCDPrint("Failed to connect.", 2);
+      LCDPrint(WiFi.status() == WL_CONNECTED ? "Connected!" : "Failed to connect.", 2);
     }
+    trying++;
   }
 }
 
