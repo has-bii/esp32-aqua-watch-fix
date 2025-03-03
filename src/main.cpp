@@ -4,8 +4,6 @@
 #include <DallasTemperature.h>
 #include <EEPROM.h>
 #include <DFRobot_PH.h>
-#include <UserConfig/UserConfig.h>
-#include <WifiConfig/WifiConfig.h>
 #include <WiFi.h>
 #include <time.h>
 #include <ReadFile/readfile.h>
