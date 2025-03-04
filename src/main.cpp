@@ -11,6 +11,7 @@
 #include <ArduinoJson.h>
 #include <NTPClient.h>
 #include <WiFiUdp.h>
+#include <DissolvedOxygen/DissolvedOxygen.h>
 
 // Constants
 #define ESPADC 4095.0
@@ -19,6 +20,7 @@
 #define TEMPERATURE_PIN 4
 #define PH_PIN 35
 #define TURBIDITY_PIN 34
+#define DO_PIN 32
 #define AP_SSID "Aqua Watch"
 #define AP_PASSWORD "aquawatch"
 
@@ -32,7 +34,7 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);
 OneWire oneWire(TEMPERATURE_PIN);
 DallasTemperature sensors(&oneWire);
 DFRobot_PH ph;
-float phValue, temperature, turbidity;
+float phValue, temperature, turbidity, dissolvedOxygen;
 int Menu = 1;
 
 // Function Declarations
@@ -74,10 +76,6 @@ void loop()
   if (millis() - timepoint > 1000U)
   {
     timepoint = millis();
-    temperature = getTemperature();
-    phValue = getPh();
-    turbidity = getTurbidity();
-    printMenu();
 
     if (WiFi.status() == WL_CONNECTED)
     {
@@ -88,13 +86,23 @@ void loop()
         Serial.println("getting time");
         timeClient.update();
       }
+      else
+        Serial.println(timeClient.getFormattedTime());
     }
     else
     {
       connectWifi();
     }
 
-    if (timeClient.getMinutes() % 3 == 0)
+    temperature = getTemperature();
+    phValue = getPh();
+    turbidity = getTurbidity();
+    dissolvedOxygen = getDO(TURBIDITY_PIN, int(temperature));
+
+    Serial.println("Temp: " + String(temperature) + "\tpH: " + String(phValue) + "\tTurbidity: " + String(int(turbidity)) + "\%\tDissolved Oxygen: " + String(dissolvedOxygen));
+    printMenu();
+
+    if (timeClient.getMinutes() % 5 == 0)
     {
       if (!isSent)
       {
@@ -147,7 +155,8 @@ float getTemperature()
 
 float getPh()
 {
-  return ph.readPH(getVoltage(PH_PIN), temperature);
+
+  return ph.readPH(analogRead(PH_PIN) / 4095.0 * 3300, temperature);
 }
 
 float getTurbidity()
@@ -180,13 +189,9 @@ void printMenu()
     lcd.setCursor(11, 0);
     lcd.printf("%4.0f%%", turbidity);
     lcd.setCursor(0, 1);
-    lcd.print(int(phValue));
-    lcd.print("pH");
-    if (timeClient.isTimeSet())
-    {
-      lcd.setCursor(8, 1);
-      lcd.print(timeClient.getFormattedTime());
-    }
+    lcd.print(String(dissolvedOxygen) + "mg/L");
+    lcd.setCursor(10, 1);
+    lcd.print(String(phValue) + "pH");
     break;
   case 2:
   {
@@ -197,11 +202,23 @@ void printMenu()
   }
   break;
   case 3:
+    lcd.print("Time: ");
+    lcd.setCursor(0, 1);
+    if (timeClient.isTimeSet())
+    {
+      lcd.print(timeClient.getFormattedTime());
+    }
+    else
+    {
+      lcd.print("Time is not configured");
+    }
+    break;
+  case 4:
     lcd.print("Access Point:");
     lcd.setCursor(0, 1);
     lcd.print(WiFi.softAPIP());
     break;
-  case 4:
+  case 5:
     if (WiFi.status() == WL_CONNECTED)
     {
       if (wifiJson.isNull())
