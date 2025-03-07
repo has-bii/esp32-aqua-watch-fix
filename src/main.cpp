@@ -11,6 +11,7 @@
 #include <WiFiUdp.h>
 #include <DissolvedOxygen/DissolvedOxygen.h>
 #include <Webserverr/Webserverr.h>
+#include <HTTPClient.h>
 
 // Constants
 #define ESPADC 4095.0
@@ -34,6 +35,14 @@ DFRobot_PH ph;
 float phValue, temperature, turbidity, dissolvedOxygen;
 int Menu = 1;
 
+// User Configuration
+const String API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV3bHVsaGtyZWZvYmFvb3htY3R0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzM4NDM5ODIsImV4cCI6MjA0OTQxOTk4Mn0.LGGDDHaAcH4f645jT3IC5-adPSku4BbRip52-Ui6e08"; // Replace with your API key
+const String refresh_session_url = "https://ewlulhkrefobaooxmctt.supabase.co/auth/v1/token?grant_type=refresh_token";
+const String login_url = "https://ewlulhkrefobaooxmctt.supabase.co/auth/v1/token?grant_type=password";
+const String insert_url = "https://ewlulhkrefobaooxmctt.supabase.co/rest/v1/dataset";
+String access_token;
+String refresh_token;
+
 // Function Declarations
 float getTemperature();
 float getVoltage(uint8_t);
@@ -43,6 +52,10 @@ void handleButtonPress();
 void printMenu();
 void LCDPrint(const String &, int);
 void connectWifi();
+bool signIn();
+bool refreshSession();
+bool sendData();
+bool checkEnv();
 
 void setup()
 {
@@ -129,21 +142,32 @@ void loop()
     Serial.println("Temp: " + String(temperature) + "\tpH: " + String(phValue) + "\tTurbidity: " + String(int(turbidity)) + "\%\tDissolved Oxygen: " + String(dissolvedOxygen));
     printMenu();
 
-    if (timeClient.getMinutes() % 5 == 0)
+    if (timeClient.getMinutes() % 5 == 0 && WiFi.status() == WL_CONNECTED)
     {
       if (!isSent)
       {
-        sentCount++;
-        Serial.print("Sending data: ");
-        Serial.println(sentCount);
         isSent = true;
+        bool isLogged = false;
+
+        if (access_token.isEmpty())
+          isLogged = signIn();
+        else
+          isLogged = refreshSession();
+
+        if (!isLogged || !checkEnv())
+        {
+          return;
+        }
+
+        if (sendData())
+          sentCount++;
       }
     }
     else
       isSent = false;
   }
 
-  ph.calibration(getVoltage(PH_PIN), temperature);
+  ph.calibration(analogRead(PH_PIN) / 4095.0 * 3300, temperature);
 }
 
 void handleButtonPress()
@@ -158,7 +182,7 @@ void handleButtonPress()
 
     if (!actionTriggered && (millis() - pressStartTime >= 1000U))
     {
-      Menu = (Menu % 4) + 1;
+      Menu = (Menu % 5) + 1;
       actionTriggered = true;
     }
   }
@@ -188,7 +212,7 @@ float getPh()
 
 float getTurbidity()
 {
-  return map(analogRead(TURBIDITY_PIN), 0, 2450, 0, 100);
+  return map(analogRead(TURBIDITY_PIN), 0, 2500, 0, 99);
 }
 
 void LCDPrint(const String &text, int duration)
@@ -293,4 +317,124 @@ void connectWifi()
     }
     trying++;
   }
+}
+
+bool signIn()
+{
+  HTTPClient http;
+  int httpResponseCode;
+
+  http.begin(login_url);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("apikey", API_KEY);
+
+  userConf = readFileToString("/user.json");
+  deserializeJson(userJson, userConf);
+
+  String requestBody;
+  serializeJson(userJson, requestBody);
+
+  httpResponseCode = http.POST(requestBody);
+
+  if (httpResponseCode != 200)
+  {
+    http.end();
+    return false;
+  }
+
+  String payload = http.getString();
+  JsonDocument response;
+  deserializeJson(response, payload);
+  access_token = response["access_token"].as<String>();
+  refresh_token = response["refresh_token"].as<String>();
+
+  http.end();
+  return true;
+}
+
+bool refreshSession()
+{
+  HTTPClient http;
+  int httpResponseCode;
+
+  http.begin(refresh_session_url);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("apikey", API_KEY);
+
+  httpResponseCode = http.POST("{'refresh_token': '" + refresh_token + "'}");
+
+  if (httpResponseCode != 200)
+  {
+    http.end();
+    return false;
+  }
+
+  String payload = http.getString();
+  JsonDocument response;
+  deserializeJson(response, payload);
+  access_token = response["access_token"].as<String>();
+  refresh_token = response["refresh_token"].as<String>();
+
+  http.end();
+  return true;
+}
+
+bool sendData()
+{
+  HTTPClient http;
+  int httpResponseCode;
+
+  Serial.println("Sending data");
+  if (!envJson["id"].is<String>())
+  {
+    LCDPrint("Env ID missing!", 2);
+    return false;
+  }
+
+  JsonDocument payloadJson;
+  String payloadString;
+
+  payloadJson["env_id"] = envJson["id"].as<String>();
+  payloadJson["temp"] = temperature;
+  payloadJson["dissolved_oxygen"] = dissolvedOxygen;
+  payloadJson["turbidity"] = turbidity / 100;
+  payloadJson["ph"] = phValue;
+
+  serializeJson(payloadJson, payloadString);
+  http.begin(insert_url);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("apikey", API_KEY);
+  http.addHeader("Authorization", "Bearer " + access_token);
+
+  httpResponseCode = http.POST(payloadString);
+
+  if (httpResponseCode != 201)
+  {
+    LCDPrint("Failed to send!", 2);
+    http.end();
+    access_token = "";
+    refresh_token = "";
+    return false;
+  }
+
+  LCDPrint("Data sent", 2);
+  http.end();
+  return true;
+}
+
+bool checkEnv()
+{
+  Serial.println("Checking Env");
+  envConf = readFileToString("/environment.json");
+  if (envConf.isEmpty())
+    return false;
+
+  DeserializationError error = deserializeJson(envJson, envConf);
+
+  if (error)
+  {
+    SPIFFS.remove("/environment.json");
+    return false;
+  }
+  return true;
 }
