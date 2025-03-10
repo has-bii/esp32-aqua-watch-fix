@@ -164,7 +164,17 @@ void loop()
       isSent = false;
   }
 
-  ph.calibration(getVoltage(PH_PIN), temperature);
+  // ph.calibration(getVoltage(PH_PIN), temperature);
+
+  if (Serial.available() > 0)
+  {
+    Menu = Serial.parseInt(); // Read integer input
+
+    while (Serial.available() > 0)
+    { // Clear any remaining data in the buffer
+      Serial.read();
+    }
+  }
 }
 
 void handleButtonPress()
@@ -203,7 +213,8 @@ float getTemperature()
 
 float getPh()
 {
-  return ph.readPH(getVoltage(PH_PIN), temperature);
+  float voltage = getVoltage(PH_PIN);
+  return voltage == 0 ? 0 : ph.readPH(voltage, temperature);
 }
 
 float getTurbidity()

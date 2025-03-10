@@ -19,6 +19,9 @@ float getDO(uint8_t pin, uint8_t temperature_c)
 
     // Serial.println("ADC_RAW: " + String(ADC_Raw) + "\tVoltage: " + String(ADC_Voltage));
 
+    if (ADC_Raw == 0)
+        return 0.0;
+
     uint16_t V_saturation = (uint32_t)CAL1_V + (uint32_t)35 * temperature_c - (uint32_t)CAL1_T * 35;
     return float((ADC_Voltage * DO_Table[temperature_c] / V_saturation) / 1000);
 }
