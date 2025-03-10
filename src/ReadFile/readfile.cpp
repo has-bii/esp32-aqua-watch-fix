@@ -6,7 +6,6 @@ String readFileToString(const char *path)
     File file = SPIFFS.open(path, FILE_READ);
     if (!file || file.isDirectory())
     {
-        Serial.println("Failed to open file for reading");
         return String();
     }
 

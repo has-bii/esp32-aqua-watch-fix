@@ -1,10 +1,10 @@
 #include "DissolvedOxygen.h"
 
-#define VREF 5000
+#define VREF 3300
 #define ADC_RES 4095
 
-#define CAL1_V (3000) // mv
-#define CAL1_T (20)   // ℃
+#define CAL1_V (550) // mv
+#define CAL1_T (22)  // ℃
 
 const uint16_t DO_Table[41] = {
     14460, 14220, 13820, 13440, 13090, 12740, 12420, 12110, 11810, 11530,
@@ -16,7 +16,8 @@ float getDO(uint8_t pin, uint8_t temperature_c)
 {
     uint16_t ADC_Raw = analogRead(pin);
     uint16_t ADC_Voltage = uint32_t(VREF) * ADC_Raw / ADC_RES;
-    Serial.println(ADC_Voltage);
+
+    // Serial.println("ADC_RAW: " + String(ADC_Raw) + "\tVoltage: " + String(ADC_Voltage));
 
     uint16_t V_saturation = (uint32_t)CAL1_V + (uint32_t)35 * temperature_c - (uint32_t)CAL1_T * 35;
     return float((ADC_Voltage * DO_Table[temperature_c] / V_saturation) / 1000);

@@ -15,12 +15,12 @@
 
 // Constants
 #define ESPADC 4095.0
-#define ESPVOLTAGE 3.3
+#define ESPVOLTAGE 3300
 #define BOOT_BUTTON 0
 #define TEMPERATURE_PIN 4
-#define PH_PIN 35
-#define TURBIDITY_PIN 34
-#define DO_PIN 32
+#define PH_PIN 34
+#define TURBIDITY_PIN 32
+#define DO_PIN 35
 #define AP_SSID "Aqua Watch"
 #define AP_PASSWORD "aquawatch"
 
@@ -34,6 +34,7 @@ DallasTemperature sensors(&oneWire);
 DFRobot_PH ph;
 float phValue, temperature, turbidity, dissolvedOxygen;
 int Menu = 1;
+bool syncEnable = false;
 
 // User Configuration
 const String API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV3bHVsaGtyZWZvYmFvb3htY3R0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzM4NDM5ODIsImV4cCI6MjA0OTQxOTk4Mn0.LGGDDHaAcH4f645jT3IC5-adPSku4BbRip52-Ui6e08"; // Replace with your API key
@@ -123,11 +124,8 @@ void loop()
       {
         timeClient.begin();
         timeClient.setTimeOffset(3600 * 3);
-        Serial.println("getting time");
         timeClient.update();
       }
-      else
-        Serial.println(timeClient.getFormattedTime());
     }
     else
     {
@@ -137,14 +135,13 @@ void loop()
     temperature = getTemperature();
     phValue = getPh();
     turbidity = getTurbidity();
-    dissolvedOxygen = getDO(TURBIDITY_PIN, int(temperature));
+    dissolvedOxygen = getDO(DO_PIN, int(temperature));
 
-    Serial.println("Temp: " + String(temperature) + "\tpH: " + String(phValue) + "\tTurbidity: " + String(int(turbidity)) + "\%\tDissolved Oxygen: " + String(dissolvedOxygen));
     printMenu();
 
     if (timeClient.getMinutes() % 5 == 0 && WiFi.status() == WL_CONNECTED)
     {
-      if (!isSent)
+      if (!isSent && syncEnable)
       {
         isSent = true;
         bool isLogged = false;
@@ -167,7 +164,7 @@ void loop()
       isSent = false;
   }
 
-  ph.calibration(analogRead(PH_PIN) / 4095.0 * 3300, temperature);
+  ph.calibration(getVoltage(PH_PIN), temperature);
 }
 
 void handleButtonPress()
@@ -206,13 +203,12 @@ float getTemperature()
 
 float getPh()
 {
-
-  return ph.readPH(analogRead(PH_PIN) / 4095.0 * 3300, temperature);
+  return ph.readPH(getVoltage(PH_PIN), temperature);
 }
 
 float getTurbidity()
 {
-  return map(analogRead(TURBIDITY_PIN), 0, 2500, 0, 99);
+  return map(getVoltage(TURBIDITY_PIN), 0, 2080, 0, 100);
 }
 
 void LCDPrint(const String &text, int duration)
@@ -237,12 +233,12 @@ void printMenu()
   {
   case 1:
     lcd.printf("%4.2fC", temperature);
-    lcd.setCursor(11, 0);
-    lcd.printf("%4.0f%%", turbidity);
+    lcd.setCursor(9, 0);
+    lcd.print(String(phValue) + "pH");
     lcd.setCursor(0, 1);
     lcd.print(String(dissolvedOxygen) + "mg/L");
-    lcd.setCursor(10, 1);
-    lcd.print(String(phValue) + "pH");
+    lcd.setCursor(11, 1);
+    lcd.printf("%4.0f%%", turbidity);
     break;
   case 2:
   {
