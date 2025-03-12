@@ -282,7 +282,7 @@ void handleSaveEnvironment(AsyncWebServerRequest *request, uint8_t *data, size_t
     deserializeJson(json, data, len);
     JsonObject jsonObj = json.as<JsonObject>();
 
-    if (!jsonObj["id"] || !jsonObj["name"])
+    if (jsonObj["id"].isNull() || jsonObj["name"].isNull() || jsonObj["enable_monitoring"].isNull())
     {
         request->send(400, "application/json", "{\"message\":\"ID and Name are required.\"}");
         json.clear();
@@ -317,7 +317,7 @@ void handleGetEnvironment(AsyncWebServerRequest *request)
     if (envConf.isEmpty())
     {
         resJson["message"] = "No environment saved.";
-        resJson["data"] = NULL;
+        resJson["data"].clear();
 
         serializeJson(resJson, res);
         request->send(400, "application/json", res);
@@ -338,6 +338,7 @@ void handleGetEnvironment(AsyncWebServerRequest *request)
     resJson["message"] = "Environment fetched successfully";
     resJson["data"]["id"] = envJson["id"].as<String>();
     resJson["data"]["name"] = envJson["name"].as<String>();
+    resJson["data"]["enable_monitoring"] = envJson["enable_monitoring"].as<bool>();
 
     serializeJson(resJson, res);
     request->send(200, "application/json", res);

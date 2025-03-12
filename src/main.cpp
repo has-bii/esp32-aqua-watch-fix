@@ -34,13 +34,14 @@ DallasTemperature sensors(&oneWire);
 DFRobot_PH ph;
 float phValue, temperature, turbidity, dissolvedOxygen;
 int Menu = 1;
-bool syncEnable = false;
+
+bool syncEnable = true;
 
 // User Configuration
 const String API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV3bHVsaGtyZWZvYmFvb3htY3R0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzM4NDM5ODIsImV4cCI6MjA0OTQxOTk4Mn0.LGGDDHaAcH4f645jT3IC5-adPSku4BbRip52-Ui6e08"; // Replace with your API key
 const String refresh_session_url = "https://ewlulhkrefobaooxmctt.supabase.co/auth/v1/token?grant_type=refresh_token";
 const String login_url = "https://ewlulhkrefobaooxmctt.supabase.co/auth/v1/token?grant_type=password";
-const String insert_url = "https://ewlulhkrefobaooxmctt.supabase.co/rest/v1/dataset";
+const String insert_url = "https://ewlulhkrefobaooxmctt.supabase.co/rest/v1/measurements";
 String access_token;
 String refresh_token;
 
@@ -57,6 +58,7 @@ bool signIn();
 bool refreshSession();
 bool sendData();
 bool checkEnv();
+void syncSettings();
 
 void setup()
 {
@@ -174,6 +176,51 @@ void loop()
     { // Clear any remaining data in the buffer
       Serial.read();
     }
+  }
+}
+
+void syncSettings()
+{
+  Serial.println("Syncing...");
+  envConf = readFileToString("/environment.json");
+
+  if (envConf.isEmpty())
+  {
+    return;
+  }
+
+  DeserializationError error = deserializeJson(envJson, envConf);
+
+  if (error)
+  {
+    SPIFFS.remove("/environment.json");
+    return;
+  }
+
+  HTTPClient http;
+
+  http.begin("https://ewlulhkrefobaooxmctt.supabase.co/rest/v1/aquarium?select=*&id=eq." + envJson["id"].as<String>());
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("apikey", API_KEY);
+  http.addHeader("Authorization", "Bearer " + access_token);
+
+  Serial.println("Getting");
+  if (http.GET() != 200)
+  {
+    return;
+  }
+
+  String response = http.getString();
+  JsonDocument body;
+
+  deserializeJson(body, response);
+
+  JsonArray array = body.as<JsonArray>();
+  http.end();
+
+  if (array.isNull())
+  {
+    return;
   }
 }
 
@@ -373,6 +420,8 @@ bool refreshSession()
   if (httpResponseCode != 200)
   {
     http.end();
+    access_token = "";
+    refresh_token = "";
     return false;
   }
 
@@ -391,7 +440,6 @@ bool sendData()
   HTTPClient http;
   int httpResponseCode;
 
-  Serial.println("Sending data");
   if (!envJson["id"].is<String>())
   {
     LCDPrint("Env ID missing!", 2);
