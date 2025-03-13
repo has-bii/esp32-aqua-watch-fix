@@ -10,8 +10,10 @@
 #include <NTPClient.h>
 #include <WiFiUdp.h>
 #include <DissolvedOxygen/DissolvedOxygen.h>
-#include <Webserverr/Webserverr.h>
+// #include <Webserverr/Webserverr.h>
+#include <ArduinoJson.h>
 #include <HTTPClient.h>
+#include <ESPSupabaseRealtime.h>
 
 // Constants
 #define ESPADC 4095.0
@@ -25,25 +27,24 @@
 #define AP_PASSWORD "aquawatch"
 
 // Global Variables
+SupabaseRealtime realtime;
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP);
-AsyncWebServer server(80);
+// AsyncWebServer server(80);
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 OneWire oneWire(TEMPERATURE_PIN);
 DallasTemperature sensors(&oneWire);
 DFRobot_PH ph;
 float phValue, temperature, turbidity, dissolvedOxygen;
 int Menu = 1;
-
 bool syncEnable = true;
 
-// User Configuration
-const String API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV3bHVsaGtyZWZvYmFvb3htY3R0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzM4NDM5ODIsImV4cCI6MjA0OTQxOTk4Mn0.LGGDDHaAcH4f645jT3IC5-adPSku4BbRip52-Ui6e08"; // Replace with your API key
-const String refresh_session_url = "https://ewlulhkrefobaooxmctt.supabase.co/auth/v1/token?grant_type=refresh_token";
-const String login_url = "https://ewlulhkrefobaooxmctt.supabase.co/auth/v1/token?grant_type=password";
+JsonDocument WifiJson, AquariumJson, UserJson;
+String WifiString, AquariumString, UserString;
+
+const String SUPABASE_URL = "https://ewlulhkrefobaooxmctt.supabase.co";
+const String API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV3bHVsaGtyZWZvYmFvb3htY3R0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzM4NDM5ODIsImV4cCI6MjA0OTQxOTk4Mn0.LGGDDHaAcH4f645jT3IC5-adPSku4BbRip52-Ui6e08";
 const String insert_url = "https://ewlulhkrefobaooxmctt.supabase.co/rest/v1/measurements";
-String access_token;
-String refresh_token;
 
 // Function Declarations
 float getTemperature();
@@ -53,12 +54,10 @@ float getTurbidity();
 void handleButtonPress();
 void printMenu();
 void LCDPrint(const String &, int);
-void connectWifi();
-bool signIn();
-bool refreshSession();
+bool connectWifi();
 bool sendData();
-bool checkEnv();
-void syncSettings();
+bool readConfiguration();
+void HandleChanges(String result);
 
 void setup()
 {
@@ -76,94 +75,73 @@ void setup()
   WiFi.softAP(AP_SSID, AP_PASSWORD);
   WiFi.scanNetworks(true);
 
-  setupWebserver(server);
+  // setupWebserver(server);
 
-  wifiConf = readFileToString("/wifi.json");
+  if (!readConfiguration())
+    return;
 
-  if (!wifiConf.isEmpty())
+  connectWifi();
+
+  if (WiFi.status() == WL_CONNECTED)
   {
-    DeserializationError error = deserializeJson(wifiJson, wifiConf);
+    timeClient.begin();
+    timeClient.setTimeOffset(3600 * 3);
+    timeClient.update();
 
-    if (error)
-    {
-      SPIFFS.remove("/wifi.json");
-      return;
-    }
+    realtime.begin(SUPABASE_URL, API_KEY, HandleChanges);
+    realtime.login_email(UserJson["email"].as<String>(), UserJson["password"].as<String>());
 
-    WiFi.begin(wifiJson["ssid"].as<String>(), wifiJson["password"].as<String>());
+    realtime.addChangesListener("aquarium", "UPDATE", "public", "id=eq." + AquariumJson["id"].as<String>());
 
-    wifiJson.clear();
+    realtime.sendPresence(AquariumJson["name"].as<String>(), timeClient.getFormattedDate(timeClient.getEpochTime() - (3 * 3600)));
 
-    LCDPrint("Connecting...", 2);
-    int retryCount = 0;
-    while (WiFi.status() != WL_CONNECTED && retryCount < 10)
-    {
-      retryCount++;
-      LCDPrint("Connecting... " + String(retryCount), 1);
-    }
-
-    if (WiFi.status() == WL_CONNECTED)
-      LCDPrint("Connected!", 2);
-    else
-      LCDPrint("Failed to connect.", 2);
+    realtime.listen();
   }
 }
 
 void loop()
 {
   static unsigned long timepoint = millis();
-  static bool isSent = false;
   static int sentCount;
+  static bool isSent;
   handleButtonPress();
 
   if (millis() - timepoint > 1000U)
   {
     timepoint = millis();
 
-    if (WiFi.status() == WL_CONNECTED)
-    {
-      if (!timeClient.isTimeSet())
-      {
-        timeClient.begin();
-        timeClient.setTimeOffset(3600 * 3);
-        timeClient.update();
-      }
-    }
-    else
-    {
-      connectWifi();
-    }
-
     temperature = getTemperature();
     phValue = getPh();
     turbidity = getTurbidity();
     dissolvedOxygen = getDO(DO_PIN, int(temperature));
 
-    printMenu();
-
-    if (timeClient.getMinutes() % 5 == 0 && WiFi.status() == WL_CONNECTED)
+    if (WiFi.status() == WL_CONNECTED)
     {
-      if (!isSent && syncEnable)
+      if (!timeClient.update())
       {
-        isSent = true;
-        bool isLogged = false;
-
-        if (access_token.isEmpty())
-          isLogged = signIn();
-        else
-          isLogged = refreshSession();
-
-        if (!isLogged || !checkEnv())
+        timeClient.forceUpdate();
+      }
+      else
+      {
+        if (timeClient.getMinutes() % 5 == 0)
         {
-          return;
-        }
+          if (!isSent && syncEnable)
+          {
+            isSent = true;
 
-        if (sendData())
-          sentCount++;
+            Serial.println(timeClient.getFormattedDate());
+            if (sendData())
+              sentCount++;
+          }
+        }
+        else
+          isSent = false;
       }
     }
     else
-      isSent = false;
+      connectWifi();
+
+    printMenu();
   }
 
   // ph.calibration(getVoltage(PH_PIN), temperature);
@@ -177,51 +155,98 @@ void loop()
       Serial.read();
     }
   }
+
+  realtime.loop();
 }
 
-void syncSettings()
+void HandleChanges(String result)
 {
-  Serial.println("Syncing...");
-  envConf = readFileToString("/environment.json");
+  JsonDocument doc;
+  deserializeJson(doc, result);
 
-  if (envConf.isEmpty())
+  File file = SPIFFS.open("/aquarium.json", FILE_WRITE);
+
+  if (!file)
   {
+    Serial.println("Failed to sync aquarium settings: failed to write file");
+    file.close();
     return;
   }
 
-  DeserializationError error = deserializeJson(envJson, envConf);
+  serializeJson(doc["record"], file);
+  file.close();
+
+  readConfiguration();
+
+  Serial.println("Aquarium settings synced");
+}
+
+bool readConfiguration()
+{
+
+  Serial.println("Reading configuration");
+
+  // Read wifi configuration
+  WifiString = readFileToString("/wifi.json");
+
+  if (WifiString.isEmpty())
+  {
+    Serial.println("wifi.json doesn't exist!");
+    return false;
+  }
+
+  DeserializationError error = deserializeJson(WifiJson, WifiString);
 
   if (error)
   {
-    SPIFFS.remove("/environment.json");
-    return;
+    Serial.println("Failed to parse wifi configuration!");
+    return false;
   }
 
-  HTTPClient http;
-
-  http.begin("https://ewlulhkrefobaooxmctt.supabase.co/rest/v1/aquarium?select=*&id=eq." + envJson["id"].as<String>());
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("apikey", API_KEY);
-  http.addHeader("Authorization", "Bearer " + access_token);
-
-  Serial.println("Getting");
-  if (http.GET() != 200)
+  if (!WifiJson["ssid"].is<String>() || !WifiJson["password"].is<String>())
   {
-    return;
+    Serial.println("ssid and password are required in wifi.json!");
+    return false;
   }
 
-  String response = http.getString();
-  JsonDocument body;
+  // Read aquarium configuration
+  AquariumString = readFileToString("/aquarium.json");
 
-  deserializeJson(body, response);
-
-  JsonArray array = body.as<JsonArray>();
-  http.end();
-
-  if (array.isNull())
+  if (AquariumString.isEmpty())
   {
-    return;
+    Serial.println("aquarium.json doesn't exist!");
+    return false;
   }
+
+  error = deserializeJson(AquariumJson, AquariumString);
+
+  if (error)
+  {
+    Serial.println("Failed to parse aquarium configuration!");
+    return false;
+  }
+
+  syncEnable = AquariumJson["enable_monitoring"].as<bool>();
+
+  // Read user configuration
+  UserString = readFileToString("/user.json");
+
+  if (UserString.isEmpty())
+  {
+    Serial.println("user.json doesn't exist!");
+    return false;
+  }
+
+  error = deserializeJson(UserJson, UserString);
+
+  if (error)
+  {
+    Serial.println("Failed to parse user!");
+    return false;
+  }
+
+  Serial.println("Configurations ok");
+  return true;
 }
 
 void handleButtonPress()
@@ -309,7 +334,7 @@ void printMenu()
   case 3:
     lcd.print("Time: ");
     lcd.setCursor(0, 1);
-    if (timeClient.isTimeSet())
+    if (timeClient.update())
     {
       lcd.print(timeClient.getFormattedTime());
     }
@@ -326,15 +351,9 @@ void printMenu()
   case 5:
     if (WiFi.status() == WL_CONNECTED)
     {
-      if (wifiJson.isNull())
+      if (WifiJson["ssid"].is<String>())
       {
-        wifiConf = readFileToString("/wifi.json");
-        deserializeJson(wifiJson, wifiConf);
-      }
-      if (wifiJson["ssid"].is<String>())
-      {
-        lcd.setCursor(0, 0);
-        lcd.print(wifiJson["ssid"].as<String>());
+        lcd.print(WifiJson["ssid"].as<String>());
         lcd.setCursor(0, 1);
         lcd.print(WiFi.localIP().toString());
       }
@@ -344,95 +363,34 @@ void printMenu()
       lcd.print("Network not connected.");
     }
     break;
+  case 6:
+    lcd.print(AquariumJson["name"].as<String>());
+    lcd.setCursor(0, 1);
+    lcd.print(syncEnable ? "Sync enabled" : "Sync disabled");
+    break;
   }
 }
 
-void connectWifi()
+bool connectWifi()
 {
-  static int trying = 0;
-  wifiConf = readFileToString("/wifi.json");
+  unsigned long timepoint = millis();
 
-  if (trying > 10)
+  Serial.println("Connecting");
+
+  WiFi.begin(WifiJson["ssid"].as<String>(), WifiJson["password"].as<String>());
+
+  while (millis() - timepoint < 10000U && WiFi.status() != WL_CONNECTED)
   {
-    SPIFFS.remove("/wifi.json");
+    timepoint = millis();
   }
 
-  if (!wifiConf.isEmpty())
+  if (WiFi.status() == WL_CONNECTED)
   {
-    deserializeJson(wifiJson, wifiConf);
-    if (wifiJson["ssid"].is<String>() && wifiJson["password"].is<String>())
-    {
-      WiFi.begin(wifiJson["ssid"].as<String>(), wifiJson["password"].as<String>());
-      for (int i = 0; i < 10 && WiFi.status() != WL_CONNECTED; i++)
-      {
-        LCDPrint("Connecting... " + String(i + 1), 1);
-      }
-      LCDPrint(WiFi.status() == WL_CONNECTED ? "Connected!" : "Failed to connect.", 2);
-    }
-    trying++;
+    Serial.println("Connected to " + WifiJson["ssid"].as<String>());
+    return true;
   }
-}
-
-bool signIn()
-{
-  HTTPClient http;
-  int httpResponseCode;
-
-  http.begin(login_url);
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("apikey", API_KEY);
-
-  userConf = readFileToString("/user.json");
-  deserializeJson(userJson, userConf);
-
-  String requestBody;
-  serializeJson(userJson, requestBody);
-
-  httpResponseCode = http.POST(requestBody);
-
-  if (httpResponseCode != 200)
-  {
-    http.end();
-    return false;
-  }
-
-  String payload = http.getString();
-  JsonDocument response;
-  deserializeJson(response, payload);
-  access_token = response["access_token"].as<String>();
-  refresh_token = response["refresh_token"].as<String>();
-
-  http.end();
-  return true;
-}
-
-bool refreshSession()
-{
-  HTTPClient http;
-  int httpResponseCode;
-
-  http.begin(refresh_session_url);
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("apikey", API_KEY);
-
-  httpResponseCode = http.POST("{'refresh_token': '" + refresh_token + "'}");
-
-  if (httpResponseCode != 200)
-  {
-    http.end();
-    access_token = "";
-    refresh_token = "";
-    return false;
-  }
-
-  String payload = http.getString();
-  JsonDocument response;
-  deserializeJson(response, payload);
-  access_token = response["access_token"].as<String>();
-  refresh_token = response["refresh_token"].as<String>();
-
-  http.end();
-  return true;
+  Serial.println("Failed to connect to " + WifiJson["ssid"].as<String>());
+  return false;
 }
 
 bool sendData()
@@ -440,56 +398,38 @@ bool sendData()
   HTTPClient http;
   int httpResponseCode;
 
-  if (!envJson["id"].is<String>())
+  if (!AquariumJson["id"].is<String>())
   {
-    LCDPrint("Env ID missing!", 2);
+    Serial.println("Aquarium ID missing!");
     return false;
   }
 
   JsonDocument payloadJson;
   String payloadString;
 
-  payloadJson["env_id"] = envJson["id"].as<String>();
+  payloadJson["env_id"] = AquariumJson["id"].as<String>();
   payloadJson["temp"] = temperature;
   payloadJson["dissolved_oxygen"] = dissolvedOxygen;
   payloadJson["turbidity"] = turbidity / 100;
   payloadJson["ph"] = phValue;
+  payloadJson["created_at"] = timeClient.getFormattedDate(timeClient.getEpochTime() - (3 * 3600));
 
   serializeJson(payloadJson, payloadString);
   http.begin(insert_url);
   http.addHeader("Content-Type", "application/json");
   http.addHeader("apikey", API_KEY);
-  http.addHeader("Authorization", "Bearer " + access_token);
 
+  Serial.println("Sending measurement");
   httpResponseCode = http.POST(payloadString);
 
   if (httpResponseCode != 201)
   {
-    LCDPrint("Failed to send!", 2);
+    Serial.println("Failed to send!");
     http.end();
-    access_token = "";
-    refresh_token = "";
     return false;
   }
 
-  LCDPrint("Data sent", 2);
+  Serial.println("Measurement has been sent");
   http.end();
-  return true;
-}
-
-bool checkEnv()
-{
-  Serial.println("Checking Env");
-  envConf = readFileToString("/environment.json");
-  if (envConf.isEmpty())
-    return false;
-
-  DeserializationError error = deserializeJson(envJson, envConf);
-
-  if (error)
-  {
-    SPIFFS.remove("/environment.json");
-    return false;
-  }
   return true;
 }
